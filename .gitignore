@@ -1,0 +1,63 @@
+# ── OpenTofu / Terraform ──────────────────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+*.tfstate
+*.tfstate.backup
+terraform.tfstate.d/
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+
+# ── Packer ────────────────────────────────────────────────────────────────────
+packer_cache/
+manifest.json
+# Fichier de vars secrets temporaire généré par task packer:build
+packer/.secrets.pkrvars.hcl
+
+# ── Secrets locaux (ne JAMAIS commiter) ───────────────────────────────────────
+tofu/secrets.tfvars
+packer/secrets.pkrvars.hcl
+# Clés privées
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# ── Python / Commitizen ───────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+dist/
+*.egg-info/
+
+# ── Go (Terratest) ────────────────────────────────────────────────────────────
+tests/integration/vendor/
+tests/integration/*.test
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Logs & tmp ────────────────────────────────────────────────────────────────
+*.log
+tmp/
+.tmp/
+
+# -- PLAN  ───────────────────────────────────────────────────
+ARCHITECTURE.md

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.11.0"
+
+      - uses: arduino/setup-task@v2
+
+      - uses: hashicorp/setup-packer@main
+        with:
+          version: "1.11.0"
+
+      - name: Install tflint
+        run: curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+      - name: Install trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: tofu init (no backend)
+        run: task tofu:init
+
+      - name: packer init
+        run: task packer:init
+
+      - name: Validate
+        run: task tofu:validate
+
+      - name: Lint
+        run: task lint
+
+      - name: Tests unitaires
+        run: task test

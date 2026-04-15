@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "minecraft-oci-instance"
+version = "0.1.0"
+description = "Automated Minecraft server on OCI Always Free tier"
+authors = [
+    {name = "Cedric DELGEHIER", email = "cedric.delgehier@gmail.com"}
+]
+readme = "ARCHITECTURE.md"
+package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+commitizen = "^3.0.0"
+pre-commit = "^4.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_provider = "poetry"
+tag_format = "v$version"
+update_changelog_on_bump = true
+version_files = [
+    "pyproject.toml:^version",
+]

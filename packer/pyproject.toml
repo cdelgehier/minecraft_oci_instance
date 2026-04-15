@@ -1,0 +1,8 @@
+[project]
+name = "minecraft-packer-env"
+version = "1.0.0"
+requires-python = ">=3.12"
+description = "Ansible-core pour le provisioning Packer"
+dependencies = [
+    "ansible-core>=2.20",
+]

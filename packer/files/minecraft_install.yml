@@ -1,0 +1,549 @@
+---
+# Playbook Ansible — provisioning image Packer Minecraft
+# Installe Java 21, Paper MC, configure systemd + UFW.
+# Le volume de données (/opt/minecraft/server) est monté par cloud-init au déploiement.
+
+- name: Minecraft server image provisioning
+  hosts: all
+  become: true
+
+  vars:
+    # ── Minecraft version ─────────────────────────────────────────────────────
+    minecraft_version: "1.21.11"
+
+    # ── Chemins internes ──────────────────────────────────────────────────────
+    minecraft_user: minecraft
+    minecraft_group: minecraft
+    minecraft_home: /opt/minecraft
+    minecraft_server_dir: "{{ minecraft_home }}/server"
+    minecraft_jar: "{{ minecraft_home }}/paper.jar"
+    # Flags JVM Aikar — optimisés G1GC pour Paper MC
+    # Xms=Xmx=8G : approprié pour une instance 12 GB RAM
+    java_opts: >-
+      -Xms8G -Xmx8G
+      -XX:+UseG1GC
+      -XX:+ParallelRefProcEnabled
+      -XX:MaxGCPauseMillis=200
+      -XX:+UnlockExperimentalVMOptions
+      -XX:+DisableExplicitGC
+      -XX:+AlwaysPreTouch
+      -XX:G1NewSizePercent=30
+      -XX:G1MaxNewSizePercent=40
+      -XX:G1HeapRegionSize=8M
+      -XX:G1ReservePercent=20
+      -XX:G1HeapWastePercent=5
+      -XX:G1MixedGCCountTarget=4
+      -XX:InitiatingHeapOccupancyPercent=15
+      -XX:G1MixedGCLiveThresholdPercent=90
+      -XX:G1RSetUpdatingPauseTimePercent=5
+      -XX:SurvivorRatio=32
+      -XX:+PerfDisableSharedMem
+      -XX:MaxTenuringThreshold=1
+
+  pre_tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - ca-certificates
+          - ufw
+          - fail2ban
+          - unattended-upgrades
+        state: present
+
+  tasks:
+    # ── rcon-cli ─────────────────────────────────────────────────────────────
+    # mcrcon n'est pas dans les repos Ubuntu 24.04 — on utilise rcon-cli (itzg, Go, ARM64)
+    - name: Download rcon-cli ARM64
+      ansible.builtin.get_url:
+        url: "https://github.com/itzg/rcon-cli/releases/download/1.7.4/rcon-cli_1.7.4_linux_arm64.tar.gz"
+        dest: /tmp/rcon-cli.tar.gz
+        mode: "0644"
+        timeout: 60
+
+    - name: Extract rcon-cli
+      ansible.builtin.unarchive:
+        src: /tmp/rcon-cli.tar.gz
+        dest: /tmp/
+        remote_src: true
+
+    - name: Install rcon-cli binary
+      ansible.builtin.copy:
+        src: /tmp/rcon-cli
+        dest: /usr/local/bin/rcon-cli
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+
+    - name: Cleanup rcon-cli tarball
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/rcon-cli.tar.gz
+        - /tmp/rcon-cli
+
+    # ── Java 21 ──────────────────────────────────────────────────────────────
+    - name: Install OpenJDK 21
+      ansible.builtin.apt:
+        name: openjdk-21-jdk-headless
+        state: present
+
+    - name: Verify Java version
+      ansible.builtin.command: java -version
+      register: java_version
+      changed_when: false
+
+    - name: Show Java version
+      ansible.builtin.debug:
+        msg: "{{ java_version.stderr }}"
+
+    # ── Utilisateur Minecraft ─────────────────────────────────────────────────
+    - name: Create minecraft group
+      ansible.builtin.group:
+        name: "{{ minecraft_group }}"
+        system: true
+        state: present
+
+    - name: Create minecraft user
+      ansible.builtin.user:
+        name: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        home: "{{ minecraft_home }}"
+        shell: /usr/sbin/nologin
+        system: true
+        create_home: true
+        state: present
+
+    # ── Répertoires ───────────────────────────────────────────────────────────
+    - name: Create server working directory
+      ansible.builtin.file:
+        path: "{{ minecraft_server_dir }}"
+        state: directory
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0755"
+
+    # ── Paper MC ─────────────────────────────────────────────────────────────
+    - name: Get latest Paper build for {{ minecraft_version }}
+      ansible.builtin.uri:
+        url: "https://api.papermc.io/v2/projects/paper/versions/{{ minecraft_version }}"
+        return_content: true
+      register: paper_builds_response
+
+    - name: Set latest build fact
+      ansible.builtin.set_fact:
+        paper_latest_build: "{{ paper_builds_response.json.builds | last }}"
+
+    - name: Show Paper build
+      ansible.builtin.debug:
+        msg: "Downloading Paper MC {{ minecraft_version }} build {{ paper_latest_build }}"
+
+    - name: Download Paper MC jar
+      ansible.builtin.get_url:
+        url: "https://api.papermc.io/v2/projects/paper/versions/{{ minecraft_version }}/builds/{{ paper_latest_build }}/downloads/paper-{{ minecraft_version }}-{{ paper_latest_build }}.jar"
+        dest: "{{ minecraft_jar }}"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0644"
+        timeout: 120
+
+    # ── Configuration de base ─────────────────────────────────────────────────
+    - name: Accept EULA
+      ansible.builtin.copy:
+        content: |
+          # By setting eula=true you agree to the Minecraft EULA
+          # https://aka.ms/MinecraftEULA
+          eula=true
+        dest: "{{ minecraft_server_dir }}/eula.txt"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0644"
+
+    - name: Copy server.properties
+      ansible.builtin.copy:
+        src: server.properties
+        dest: "{{ minecraft_server_dir }}/server.properties"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0644"
+
+    # ── JVM options (overridable par cloud-init) ──────────────────────────────
+    - name: Create JVM options directory
+      ansible.builtin.file:
+        path: /etc/minecraft
+        state: directory
+        mode: "0755"
+
+    - name: Create JVM options file
+      ansible.builtin.copy:
+        content: "JAVA_OPTS=\"{{ java_opts }}\"\n"
+        dest: /etc/minecraft/jvm.conf
+        mode: "0644"
+
+    # ── Wrapper script (évite les problèmes de word-splitting systemd) ───────
+    - name: Create minecraft start wrapper script
+      ansible.builtin.copy:
+        content: |
+          #!/bin/sh
+          . /etc/minecraft/jvm.conf
+          exec /usr/bin/java $JAVA_OPTS -jar {{ minecraft_jar }} --nogui
+        dest: /usr/local/bin/minecraft-start.sh
+        mode: "0755"
+        owner: root
+        group: root
+
+    # ── Systemd service ───────────────────────────────────────────────────────
+    - name: Create minecraft systemd service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Paper Minecraft Server {{ minecraft_version }}
+          Documentation=https://docs.papermc.io
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ minecraft_user }}
+          Group={{ minecraft_group }}
+          WorkingDirectory={{ minecraft_server_dir }}
+          ExecStart=/usr/local/bin/minecraft-start.sh
+          ExecStop=/bin/kill -SIGINT $MAINPID
+          Restart=on-failure
+          RestartSec=30
+          TimeoutStopSec=60
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=minecraft
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/minecraft.service
+        mode: "0644"
+
+    - name: Enable minecraft service (démarrage au boot, pas maintenant)
+      ansible.builtin.systemd:
+        name: minecraft
+        enabled: true
+        daemon_reload: true
+
+    # ── node_exporter ────────────────────────────────────────────────────────
+    - name: Download node_exporter ARM64
+      ansible.builtin.get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v1.9.0/node_exporter-1.9.0.linux-arm64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+        mode: "0644"
+        timeout: 120
+
+    - name: Extract node_exporter
+      ansible.builtin.unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp/
+        remote_src: true
+
+    - name: Install node_exporter binary
+      ansible.builtin.copy:
+        src: /tmp/node_exporter-1.9.0.linux-arm64/node_exporter
+        dest: /usr/local/bin/node_exporter
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+
+    - name: Create textfile collector directory for node_exporter
+      ansible.builtin.file:
+        path: /var/lib/node_exporter/textfile_collector
+        state: directory
+        owner: nobody
+        group: nogroup
+        mode: "0755"
+
+    - name: Create node_exporter systemd service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Prometheus Node Exporter
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=nobody
+          ExecStart=/usr/local/bin/node_exporter \
+            --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/node-exporter.service
+        mode: "0644"
+
+    - name: Enable node-exporter service
+      ansible.builtin.systemd:
+        name: node-exporter
+        enabled: true
+        daemon_reload: true
+
+    - name: Cleanup node_exporter tarball
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/node_exporter.tar.gz
+        - /tmp/node_exporter-1.9.0.linux-arm64
+
+    # ── minecraft-metrics (textfile collector) ────────────────────────────────
+    # Pas de service séparé — un script + systemd timer interroge le serveur
+    # via rcon-cli toutes les 30s et écrit les métriques pour node_exporter.
+    # Le mot de passe RCON_PASSWORD_PLACEHOLDER est remplacé par cloud-init.
+    - name: Create minecraft-metrics script
+      ansible.builtin.copy:
+        content: |
+          #!/bin/bash
+          # Interroge Paper MC via RCON et expose les métriques au format Prometheus
+          # Écrit dans le textfile_collector de node_exporter
+          set -euo pipefail
+
+          RCON_PASS=$(cat /etc/minecraft/rcon.password 2>/dev/null || echo "RCON_PASSWORD_PLACEHOLDER")
+          OUTFILE=/var/lib/node_exporter/textfile_collector/minecraft.prom
+          TMPFILE="${OUTFILE}.tmp"
+
+          rcon_cmd() {
+            rcon-cli --host localhost --port 25575 --password "$RCON_PASS" "$@" 2>/dev/null || echo ""
+          }
+
+          {
+            echo "# HELP mc_up 1 si le serveur Minecraft répond au RCON, 0 sinon"
+            echo "# TYPE mc_up gauge"
+            if rcon-cli --host localhost --port 25575 --password "$RCON_PASS" "version" &>/dev/null; then
+              echo "mc_up 1"
+
+              # Nombre de joueurs connectés
+              list_output=$(rcon_cmd "list")
+              players=$(echo "$list_output" | grep -oP '^\d+' || echo "0")
+              echo "# HELP mc_players_online Joueurs connectés"
+              echo "# TYPE mc_players_online gauge"
+              echo "mc_players_online ${players:-0}"
+
+              # TPS (Paper MC uniquement — commande /tps)
+              tps_output=$(rcon_cmd "tps")
+              tps_1m=$(echo "$tps_output"  | grep -oP '[\d.]+' | sed -n '1p' || echo "0")
+              tps_5m=$(echo "$tps_output"  | grep -oP '[\d.]+' | sed -n '2p' || echo "0")
+              tps_15m=$(echo "$tps_output" | grep -oP '[\d.]+' | sed -n '3p' || echo "0")
+              echo "# HELP mc_tps Ticks par seconde (Paper MC)"
+              echo "# TYPE mc_tps gauge"
+              echo "mc_tps{period=\"1m\"} ${tps_1m:-0}"
+              echo "mc_tps{period=\"5m\"} ${tps_5m:-0}"
+              echo "mc_tps{period=\"15m\"} ${tps_15m:-0}"
+            else
+              echo "mc_up 0"
+            fi
+          } > "$TMPFILE"
+
+          mv "$TMPFILE" "$OUTFILE"
+          chown nobody:nogroup "$OUTFILE"
+        dest: /usr/local/bin/minecraft-metrics.sh
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create minecraft-metrics systemd service (one-shot)
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Collect Minecraft metrics for Prometheus
+          After=minecraft.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/minecraft-metrics.sh
+        dest: /etc/systemd/system/minecraft-metrics.service
+        mode: "0644"
+
+    - name: Create minecraft-metrics systemd timer (toutes les 30s)
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Collect Minecraft metrics every 30s
+
+          [Timer]
+          OnBootSec=60s
+          OnUnitActiveSec=30s
+
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/minecraft-metrics.timer
+        mode: "0644"
+
+    - name: Enable minecraft-metrics timer
+      ansible.builtin.systemd:
+        name: minecraft-metrics.timer
+        enabled: true
+        daemon_reload: true
+
+    # ── restic ────────────────────────────────────────────────────────────────
+    - name: Install restic via apt
+      ansible.builtin.apt:
+        name: restic
+        state: present
+
+    - name: Create minecraft-backup systemd service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Restic backup Minecraft world
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          User=root
+          EnvironmentFile=/etc/minecraft/backup.env
+          ExecStart=/usr/bin/restic backup /opt/minecraft/server \
+            --tag minecraft --exclude='*.lock'
+          ExecStartPost=/usr/bin/restic forget \
+            --tag minecraft --keep-daily 7 --keep-weekly 4 --prune
+        dest: /etc/systemd/system/minecraft-backup.service
+        mode: "0644"
+
+    - name: Create minecraft-backup systemd timer
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Minecraft world backup every 6h
+
+          [Timer]
+          OnBootSec=15min
+          OnUnitActiveSec=6h
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/minecraft-backup.timer
+        mode: "0644"
+
+    - name: Enable minecraft-backup timer
+      ansible.builtin.systemd:
+        name: minecraft-backup.timer
+        enabled: true
+        daemon_reload: true
+
+    # ── Tailscale ─────────────────────────────────────────────────────────────
+    # Script officiel — gère le GPG dearmor + apt repo automatiquement
+    - name: Install Tailscale via official install script
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://tailscale.com/install.sh | sh
+        creates: /usr/bin/tailscale
+
+    - name: Enable tailscaled (auth key injecté par cloud-init au démarrage)
+      ansible.builtin.systemd:
+        name: tailscaled
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ── SSH hardening ─────────────────────────────────────────────────────────
+    - name: Harden SSH configuration
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?AllowAgentForwarding', line: 'AllowAgentForwarding no' }
+      notify: Restart sshd
+
+    # ── fail2ban ──────────────────────────────────────────────────────────────
+    - name: Configure fail2ban jail for SSH
+      ansible.builtin.copy:
+        content: |
+          [sshd]
+          enabled  = true
+          port     = ssh
+          maxretry = 5
+          bantime  = 1h
+          findtime = 10m
+        dest: /etc/fail2ban/jail.d/sshd.conf
+        mode: "0644"
+
+    - name: Enable fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        enabled: true
+        daemon_reload: true
+
+    # ── Automatic security updates ────────────────────────────────────────────
+    - name: Configure unattended-upgrades
+      ansible.builtin.copy:
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}-security";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        mode: "0644"
+
+    - name: Enable unattended-upgrades
+      ansible.builtin.copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        mode: "0644"
+
+    # ── UFW Firewall ──────────────────────────────────────────────────────────
+    - name: Allow SSH
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+        comment: SSH
+
+    - name: Allow Minecraft Java
+      community.general.ufw:
+        rule: allow
+        port: "25565"
+        proto: tcp
+        comment: Minecraft Java Edition
+
+    - name: Allow node_exporter via Tailscale only
+      community.general.ufw:
+        rule: allow
+        direction: in
+        interface: tailscale0
+        to_port: "9100"
+        proto: tcp
+        comment: node_exporter (Prometheus via Tailscale)
+
+    - name: Allow minecraft-exporter via Tailscale only
+      community.general.ufw:
+        rule: allow
+        direction: in
+        interface: tailscale0
+        to_port: "9150"
+        proto: tcp
+        comment: minecraft-exporter (Prometheus via Tailscale)
+
+    - name: Enable UFW (default deny incoming)
+      community.general.ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted

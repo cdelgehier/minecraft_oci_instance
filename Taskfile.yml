@@ -1,0 +1,162 @@
+version: '3'
+
+vars:
+  TOFU_DIR: tofu
+  PACKER_DIR: packer
+  IMAGE_OCID: '{{.IMAGE_OCID | default ""}}'
+  SERVER_IP: '{{.SERVER_IP | default "minecraft-oci"}}'  # hostname Tailscale ou IP publique
+
+tasks:
+
+  # ── Setup ──────────────────────────────────────────────────────────────────
+  setup:
+    desc: "Installer les pre-commit hooks"
+    cmds:
+      - pre-commit install --install-hooks
+      - pre-commit install --hook-type commit-msg
+
+  # ── Lint / Format / Validate ───────────────────────────────────────────────
+  lint:
+    desc: "tofu fmt-check + tflint + trivy + packer validate"
+    cmds:
+      - task: tofu:fmt-check
+      - task: tofu:tflint
+      - task: tofu:trivy
+      - task: packer:validate
+
+  fmt:
+    desc: "Formater tous les fichiers HCL (tofu + packer)"
+    cmds:
+      - cd {{.TOFU_DIR}} && tofu fmt -recursive
+      - packer fmt {{.PACKER_DIR}}
+
+  # ── Tests ──────────────────────────────────────────────────────────────────
+  test:
+    desc: "Tests unitaires OpenTofu (sans compte OCI requis)"
+    cmds:
+      - task: tofu:test
+
+
+  # ── Packer ─────────────────────────────────────────────────────────────────
+  packer:init:
+    desc: "Initialiser les plugins Packer"
+    dir: "{{.PACKER_DIR}}"
+    cmds:
+      - packer init .
+
+  packer:validate:
+    desc: "Valider le template Packer (lit ~/.oci/config)"
+    dir: "{{.PACKER_DIR}}"
+    cmds:
+      # -syntax-only : vérifie la syntaxe HCL sans contacter l'API OCI (pas de credentials requis)
+      - packer validate -syntax-only -var-file=minecraft.pkrvars.hcl .
+
+  packer:build:
+    desc: "Construire l'image OCI Minecraft (lit ~/.oci/config)"
+    dir: "{{.PACKER_DIR}}"
+    cmds:
+      - packer build -var-file=minecraft.pkrvars.hcl .
+
+  # ── OpenTofu ───────────────────────────────────────────────────────────────
+  tofu:init:
+    desc: "Initialiser OpenTofu (backend local — pour CI/tests, sans credentials S3)"
+    cmds:
+      # Bug opentofu/terraform : -backend=false valide quand même les credentials S3
+      # si un .terraform/ en cache pointe vers S3. Workaround : override temporaire
+      # qui remplace le backend S3 par local, puis cleanup.
+      # Supprime le cache du backend S3 (évite que -backend=false essaie de se connecter)
+      - rm -f {{.TOFU_DIR}}/.terraform/terraform.tfstate
+      - |
+        printf 'terraform {\n  backend "local" {}\n}\n' > {{.TOFU_DIR}}/backend_override.tf
+      - defer: rm -f {{.TOFU_DIR}}/backend_override.tf
+      - cd {{.TOFU_DIR}} && tofu init -backend=false
+
+  tofu:init-remote:
+    desc: "Initialiser OpenTofu avec le backend OCI Object Storage (S3-compatible)"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu init
+
+  tofu:fmt-check:
+    cmds:
+      - cd {{.TOFU_DIR}} && tofu fmt -check -recursive
+
+  tofu:validate:
+    desc: "Valider la configuration OpenTofu"
+    cmds:
+      - cd {{.TOFU_DIR}} && tofu validate
+
+  tofu:tflint:
+    cmds:
+      - cd {{.TOFU_DIR}} && tflint --recursive --config $(git rev-parse --show-toplevel)/.tflint.hcl
+
+  tofu:trivy:
+    cmds:
+      - trivy config --severity HIGH,CRITICAL {{.TOFU_DIR}}
+
+  tofu:test:
+    cmds:
+      - cd {{.TOFU_DIR}} && tofu test
+
+  tofu:plan:
+    desc: "Afficher le plan — IMAGE_OCID=<ocid> task tofu:plan"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu plan \
+          -var-file=secrets.tfvars \
+          -var="minecraft_image_ocid={{.IMAGE_OCID}}"
+
+  tofu:apply:
+    desc: "Appliquer l'infrastructure — IMAGE_OCID=<ocid> task tofu:apply"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu apply -auto-approve \
+          -var-file=secrets.tfvars \
+          -var="minecraft_image_ocid={{.IMAGE_OCID}}"
+
+  tofu:destroy:
+    desc: "Détruire toute l'infrastructure (DANGER)"
+    prompt: "Cette action va détruire toute l'infrastructure OCI. Continuer ?"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu destroy \
+          -var-file=secrets.tfvars \
+          -var="minecraft_image_ocid={{.IMAGE_OCID}}"
+
+  tofu:output:
+    desc: "Afficher les outputs (IP publique, commande SSH, etc.)"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu output
+
+  tofu:state:
+    desc: "Lister les ressources dans le state — tofu state list"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu state list
+
+  tofu:state-show:
+    desc: "Détail d'une ressource — RESOURCE=<addr> task tofu:state-show"
+    cmds:
+      - |
+        export AWS_ACCESS_KEY_ID=$(grep 's3_access_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        export AWS_SECRET_ACCESS_KEY=$(grep 's3_secret_key' {{.TOFU_DIR}}/secrets.tfvars | awk -F'"' '{print $2}')
+        cd {{.TOFU_DIR}} && tofu state show {{.RESOURCE}}
+
+  tofu:docs:
+    desc: "Regénérer les README des modules via terraform-docs"
+    cmds:
+      - for: [compute, storage]
+        cmd: terraform-docs markdown table {{.TOFU_DIR}}/modules/{{.ITEM}} > {{.TOFU_DIR}}/modules/{{.ITEM}}/README.md
