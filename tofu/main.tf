@@ -7,6 +7,74 @@ provider "oci" {
 # ── Namespace Object Storage (auto-découvert) ─────────────────────────────────
 data "oci_objectstorage_namespace" "current" {}
 
+# ── Security List — toutes les règles réseau OCI ──────────────────────────────
+resource "oci_core_security_list" "minecraft" {
+  compartment_id = var.compartment_ocid
+  vcn_id         = data.oci_core_subnet.minecraft.vcn_id
+  display_name   = "minecraft-security-list"
+  freeform_tags  = local.common_tags
+
+  ingress_security_rules {
+    protocol    = "6"
+    source      = "0.0.0.0/0"
+    description = "SSH"
+    tcp_options {
+      min = 22
+      max = 22
+    }
+  }
+
+  ingress_security_rules {
+    protocol    = "6"
+    source      = "0.0.0.0/0"
+    description = "Minecraft Java TCP"
+    tcp_options {
+      min = 25565
+      max = 25565
+    }
+  }
+
+  ingress_security_rules {
+    protocol    = "17"
+    source      = "0.0.0.0/0"
+    description = "Minecraft Bedrock UDP (Geyser clone-remote-port)"
+    udp_options {
+      min = 25565
+      max = 25565
+    }
+  }
+
+  ingress_security_rules {
+    protocol    = "17"
+    source      = "0.0.0.0/0"
+    description = "Minecraft Bedrock UDP (Geyser fallback)"
+    udp_options {
+      min = 19132
+      max = 19132
+    }
+  }
+
+  ingress_security_rules {
+    protocol    = "1"
+    source      = "0.0.0.0/0"
+    description = "ICMP Path MTU"
+    icmp_options {
+      type = 3
+      code = 4
+    }
+  }
+
+  egress_security_rules {
+    protocol    = "all"
+    destination = "0.0.0.0/0"
+    description = "Tout le trafic sortant"
+  }
+}
+
+data "oci_core_subnet" "minecraft" {
+  subnet_id = var.subnet_ocid
+}
+
 # ── Modules ───────────────────────────────────────────────────────────────────
 
 module "storage" {

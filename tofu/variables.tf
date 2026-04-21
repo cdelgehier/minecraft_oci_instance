@@ -10,6 +10,7 @@ variable "subnet_ocid" {
   type        = string
 }
 
+
 # ── Infrastructure (terraform.tfvars) ─────────────────────────────────────────
 
 variable "region" {

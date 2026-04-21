@@ -375,6 +375,16 @@ Dans le **launcher Minecraft Java Edition** :
 
 > Via Tailscale (si tu es dans le même réseau Tailscale que le serveur) : utilise l'adresse `minecraft-oci`.
 
+### Connexion Bedrock (téléphone, console, Windows)
+
+Les amis Bedrock se connectent avec la même IP et le même port **25565**.
+
+> **Erreur "Échec de la connexion multijoueur" sur Xbox ?**
+> C'est un problème de permission sur le compte Microsoft, pas un problème de serveur.
+> Le parent doit activer le multijoueur ici : [xbox.com/fr-BE/user/settings/privacy-and-safety](https://www.xbox.com/fr-BE/user/settings/privacy-and-safety)
+> → **Vous pouvez rejoindre des parties multijoueur** → **Autoriser** → Sauvegarder
+> Redémarre Minecraft et réessaie.
+
 ---
 
 ## Opérations courantes
