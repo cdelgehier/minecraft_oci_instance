@@ -21,6 +21,8 @@
     # Xms=Xmx=8G : approprié pour une instance 12 GB RAM
     java_opts: >-
       -Xms8G -Xmx8G
+      -Dlog4j2.formatMsgNoLookups=true
+      -Dnet.minecraft.server.level=DEBUG
       -XX:+UseG1GC
       -XX:+ParallelRefProcEnabled
       -XX:MaxGCPauseMillis=200
@@ -503,6 +505,62 @@
         dest: /etc/apt/apt.conf.d/20auto-upgrades
         mode: "0644"
 
+    # ── GeyserMC + Floodgate (Crossplay Java ↔ Bedrock) ─────────────────────
+    - name: Create plugins directory
+      ansible.builtin.file:
+        path: "{{ minecraft_server_dir }}/plugins"
+        state: directory
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0755"
+
+    - name: Download Geyser-Spigot plugin
+      ansible.builtin.get_url:
+        url: "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot"
+        dest: "{{ minecraft_server_dir }}/plugins/Geyser-Spigot.jar"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0644"
+        timeout: 120
+
+    - name: Download Floodgate-Spigot plugin
+      ansible.builtin.get_url:
+        url: "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot"
+        dest: "{{ minecraft_server_dir }}/plugins/floodgate-spigot.jar"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0644"
+        timeout: 120
+
+    - name: Create Geyser config directory
+      ansible.builtin.file:
+        path: "{{ minecraft_server_dir }}/plugins/Geyser-Spigot"
+        state: directory
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0755"
+
+    - name: Pre-configure Geyser (auth-type floodgate, port 19132 UDP)
+      ansible.builtin.copy:
+        content: |
+          bedrock:
+            address: 0.0.0.0
+            port: 19132
+            clone-remote-port: true
+            motd1: "LuckFlash Minecraft Server"
+            motd2: "Bedrock Connect"
+            server-name: "LuckFlash"
+          remote:
+            address: auto
+            port: 25565
+            auth-type: floodgate
+          metrics:
+            enabled: false
+        dest: "{{ minecraft_server_dir }}/plugins/Geyser-Spigot/config.yml"
+        owner: "{{ minecraft_user }}"
+        group: "{{ minecraft_group }}"
+        mode: "0644"
+
     # ── UFW Firewall ──────────────────────────────────────────────────────────
     - name: Allow SSH
       community.general.ufw:
@@ -517,6 +575,20 @@
         port: "25565"
         proto: tcp
         comment: Minecraft Java Edition
+
+    - name: Allow Minecraft Bedrock (Geyser) — port 19132 UDP (fallback)
+      community.general.ufw:
+        rule: allow
+        port: "19132"
+        proto: udp
+        comment: Minecraft Bedrock Edition (Geyser fallback)
+
+    - name: Allow Minecraft Bedrock (Geyser) — port 25565 UDP (clone-remote-port)
+      community.general.ufw:
+        rule: allow
+        port: "25565"
+        proto: udp
+        comment: Minecraft Bedrock Edition (Geyser clone-remote-port)
 
     - name: Allow node_exporter via Tailscale only
       community.general.ufw:

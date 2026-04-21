@@ -10,6 +10,43 @@ L'infrastructure est entièrement automatisée :
 
 ---
 
+```mermaid
+flowchart LR
+    subgraph local["🖥️ Mon ordinateur"]
+        laptop["💻 Mon ordi"]
+        prometheus["📊 Prometheus"]
+    end
+
+    subgraph oci["☁️ Oracle Cloud — gratuit !"]
+        packer["💿 Machine temporaire"]
+        image["📦 Image Minecraft"]
+        instance["🖥️ Serveur Minecraft"]
+        pubip["🌐 Port 25565"]
+    end
+
+    github["📦 GitHub"]
+    tailscale["🔒 Tailscale"]
+    java["☕ Ami Java PC · Mac · Linux"]
+    bedrock["🪨 Ami Bedrock Téléphone · Console"]
+
+    laptop -->|"pousse le code"| github
+    laptop -->|"construit"| packer
+    packer -->|"image prête"| image
+    image -->|"déploie"| instance
+    instance --- pubip
+
+    laptop <-->|"SSH sécurisé"| tailscale
+    tailscale <-->|"tunnel"| instance
+
+    instance -.->|"stats"| tailscale
+    tailscale -.-> prometheus
+
+    java -->|"TCP 25565"| pubip
+    bedrock -->|"UDP 25565"| pubip
+```
+
+---
+
 ## Ce que tu vas obtenir
 
 - Serveur Minecraft Paper 1.21.x sur VM ARM 4 vCPU / 24 GB RAM

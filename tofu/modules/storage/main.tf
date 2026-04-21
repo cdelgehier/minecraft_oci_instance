@@ -11,7 +11,7 @@ resource "oci_core_volume" "world" {
   freeform_tags = var.tags
 
   lifecycle {
-    prevent_destroy = true
+    prevent_destroy = false
   }
 }
 
